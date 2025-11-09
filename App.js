@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, FlatList } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import TrackMap from './src/components/TrackMap';
@@ -10,8 +10,24 @@ import { Q } from '@nozbe/watermelondb';
 import { OfflineManager } from '@maplibre/maplibre-react-native';
 import { database } from './src/db/database';
 import { distMeters } from './src/utils/geo';
+import { segmentTrips } from './src/utils/trips';
+import {
+  BG_TASK,
+  FG_TIME_INTERVAL_MS,
+  FG_DISTANCE_INTERVAL_M,
+  MIN_MOVE_TO_SAVE_M,
+  TILE_URLS,
+  CACHE_SIZE_BYTES,
+  FG_SERVICE_TITLE,
+  FG_SERVICE_BODY,
+  ACCURACY,
+  TRIP_GAP_MS,
+  TRIP_MIN_POINTS,
+  BG_ACCURACY,
+  BG_TIME_INTERVAL_MS,
+  BG_DISTANCE_INTERVAL_M,
+} from './src/config/constants';
 
-const BG_TASK = 'LOCATION_TRACKING_TASK';
 let bgLastSaved = null;
 
 try {
@@ -44,7 +60,7 @@ try {
       console.log('BG saved (first)', point);
     } else {
       const d = distMeters(bgLastSaved, point);
-      if (d > 50) {
+      if (d > MIN_MOVE_TO_SAVE_M) {
         bgLastSaved = point;
         try {
           await database.write(async () => {
@@ -56,9 +72,9 @@ try {
             });
           });
         } catch (e) { console.log('BG DB save error', e); }
-        console.log(`BG saved (>50m: ${Math.round(d)}m)`);
+        console.log(`BG saved (>${MIN_MOVE_TO_SAVE_M}m: ${Math.round(d)}m)`);
       } else {
-        console.log(`BG skipped (${Math.round(d)}m < 50m)`);
+        console.log(`BG skipped (${Math.round(d)}m < ${MIN_MOVE_TO_SAVE_M}m)`);
       }
     }
   });
@@ -75,13 +91,10 @@ export default function App() {
   const [savedLocations, setSavedLocations] = useState([]);
   const [debugVisible, setDebugVisible] = useState(false);
   const [bgActive, setBgActive] = useState(false);
+  const [tripsVisible, setTripsVisible] = useState(false);
   const lastSavedRef = useRef(null);
   const watchRef = useRef(null);
-  const tileUrls = [
-    'https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
-    'https://b.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
-    'https://c.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
-  ];
+  const tileUrls = TILE_URLS;
 
 
   useEffect(() => {
@@ -93,11 +106,11 @@ export default function App() {
         return;
       }
       try {
-        await OfflineManager.setMaximumAmbientCacheSize(300 * 1024 * 1024);
+        await OfflineManager.setMaximumAmbientCacheSize(CACHE_SIZE_BYTES);
       } catch (e) {
         console.log('Ambient cache size set error', e);
       }
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy[ACCURACY] });
       const coords = {
         latitude: loc.coords.latitude,
         longitude: loc.coords.longitude,
@@ -125,6 +138,20 @@ export default function App() {
     return () => sub?.unsubscribe();
   }, [db]);
 
+  const trips = useMemo(() => segmentTrips(savedLocations, TRIP_GAP_MS, TRIP_MIN_POINTS), [savedLocations]);
+
+  const fmtTime = (ms) => new Date(ms).toLocaleString();
+  const fmtDuration = (ms) => {
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    if (h) return `${h}h ${m}m ${ss}s`;
+    if (m) return `${m}m ${ss}s`;
+    return `${ss}s`;
+  };
+  const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
+
   useEffect(() => {
     (async () => {
       try {
@@ -142,9 +169,9 @@ export default function App() {
         if (status !== 'granted') return;
         watchRef.current = await Location.watchPositionAsync(
           {
-            accuracy: Location.Accuracy.Balanced,
-            timeInterval: 5000,
-            distanceInterval: 10,
+            accuracy: Location.Accuracy[ACCURACY],
+            timeInterval: FG_TIME_INTERVAL_MS,
+            distanceInterval: FG_DISTANCE_INTERVAL_M,
           },
           (loc) => {
             if (!isMounted) return;
@@ -174,11 +201,11 @@ export default function App() {
               } catch (e) { console.log('DB save error', e); }
             } else {
               const d = distMeters(lastSavedRef.current, point);
-              if (d > 50) {
+              if (d > MIN_MOVE_TO_SAVE_M) {
                 lastSavedRef.current = point;
                 setSavedLocations((prev) => {
                   const next = [...prev, point];
-                  console.log(`Saved location (>50m: ${Math.round(d)}m). Total: ${next.length}`);
+                  console.log(`Saved location (>${MIN_MOVE_TO_SAVE_M}m: ${Math.round(d)}m). Total: ${next.length}`);
                   return next;
                 });
                 try {
@@ -192,7 +219,7 @@ export default function App() {
                   });
                 } catch (e) { console.log('DB save error', e); }
               } else {
-                console.log(`Skipped update (${Math.round(d)}m < 50m)`);
+                console.log(`Skipped update (${Math.round(d)}m < ${MIN_MOVE_TO_SAVE_M}m)`);
               }
             }
           }
@@ -226,14 +253,14 @@ export default function App() {
           return;
         }
         await Location.startLocationUpdatesAsync(BG_TASK, {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: 5000,
-          distanceInterval: 10,
+          accuracy: Location.Accuracy[BG_ACCURACY],
+          timeInterval: BG_TIME_INTERVAL_MS,
+          distanceInterval: BG_DISTANCE_INTERVAL_M,
           pausesUpdatesAutomatically: false,
           showsBackgroundLocationIndicator: true,
           foregroundService: {
-            notificationTitle: 'Location Tracking',
-            notificationBody: 'Tracking location in background',
+            notificationTitle: FG_SERVICE_TITLE,
+            notificationBody: FG_SERVICE_BODY,
           },
         });
         setBgActive(true);
@@ -273,7 +300,7 @@ export default function App() {
           </View>
         )}
         <View style={styles.attributionContainer} pointerEvents="none">
-          <Text style={styles.attributionText}>© OpenStreetMap contributors · Tiles © OpenStreetMap</Text>
+          {/* <Text style={styles.attributionText}>© OpenStreetMap contributors · Tiles © OpenStreetMap</Text> */}
         </View>
         <View style={styles.leftBtnStack}>
           <TouchableOpacity onPress={() => setDebugVisible(true)} style={styles.debugBtn}>
@@ -281,6 +308,9 @@ export default function App() {
           </TouchableOpacity>
           <TouchableOpacity onPress={onToggleBackground} style={styles.bgBtn}>
             <Text style={styles.bgBtnText}>{bgActive ? 'BG: On' : 'BG: Off'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setTripsVisible(true)} style={styles.bgBtn}>
+            <Text style={styles.debugBtnText}>Trips</Text>
           </TouchableOpacity>
         </View>
         <View style={styles.rightBtnStack}>
@@ -307,6 +337,26 @@ export default function App() {
               <Text style={styles.modalCloseText}>Clear Cache</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setDebugVisible(false)} style={styles.modalCloseBtn}>
+              <Text style={styles.modalCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={tripsVisible} transparent animationType="slide" onRequestClose={() => setTripsVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Trips: {trips.length}</Text>
+            <FlatList
+              data={trips}
+              keyExtractor={(_, i) => `trip-${i}`}
+              renderItem={({ item, index }) => (
+                <Text style={styles.modalItem}>
+                  {index + 1}. {fmtTime(item.startTime)} → {fmtTime(item.endTime)} · {fmtDuration(item.durationMs)} · {fmtKm(item.distanceMeters)}
+                </Text>
+              )}
+            />
+            <TouchableOpacity onPress={() => setTripsVisible(false)} style={styles.modalCloseBtn}>
               <Text style={styles.modalCloseText}>Close</Text>
             </TouchableOpacity>
           </View>

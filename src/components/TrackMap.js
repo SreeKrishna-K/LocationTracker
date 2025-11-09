@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet } from 'react-native';
 import { MapView, Camera, ShapeSource, LineLayer, CircleLayer, RasterSource, RasterLayer } from '@maplibre/maplibre-react-native';
+import { INITIAL_ZOOM, TILE_SIZE, RENDER_WORLD_COPIES } from '../config/constants';
 
 export default function TrackMap({ region, tileUrls, savedLocations, location }) {
   return (
@@ -9,11 +10,13 @@ export default function TrackMap({ region, tileUrls, savedLocations, location })
       compassEnabled={false}
       logoEnabled={false}
       attributionEnabled={false}
+      renderWorldCopies={RENDER_WORLD_COPIES}
+      // maxBounds={{ne: [180, 85],sw: [-180, -85]}}
       styleJSON={JSON.stringify({ version: 8, sources: {}, layers: [{ id: 'bg', type: 'background' }] })}
     >
-      <Camera centerCoordinate={[region.longitude, region.latitude]} zoomLevel={15} />
+      <Camera centerCoordinate={[region.longitude, region.latitude]} zoomLevel={INITIAL_ZOOM} />
 
-      <RasterSource id="osm" tileUrlTemplates={tileUrls} tileSize={256}>
+      <RasterSource id="osm" tileUrlTemplates={tileUrls} tileSize={TILE_SIZE}>
         <RasterLayer id="osmLayer" sourceID="osm" />
       </RasterSource>
 
