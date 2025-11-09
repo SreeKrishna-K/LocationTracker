@@ -1,7 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { StyleSheet, Text, View, SafeAreaView, TouchableOpacity, ActivityIndicator, Modal, FlatList } from 'react-native';
-import MapView, { Marker, UrlTile, PROVIDER_DEFAULT, Polyline } from 'react-native-maps';
+import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, FlatList } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import MapLibreGL from '@maplibre/maplibre-react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { useDatabase } from '@nozbe/watermelondb/hooks';
@@ -87,6 +88,7 @@ export default function App() {
   const [bgActive, setBgActive] = useState(false);
   const lastSavedRef = useRef(null);
   const watchRef = useRef(null);
+  const tileUrl = 'https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png';
 
   const distMeters = (a, b) => {
     const toRad = (x) => (x * Math.PI) / 180;
@@ -265,34 +267,48 @@ export default function App() {
     <SafeAreaView style={styles.container}>
       <View style={styles.container}>
         {region ? (
-          <MapView
-            provider={PROVIDER_DEFAULT}
+          <MapLibreGL.MapView
             style={StyleSheet.absoluteFillObject}
-            initialRegion={region}
-            mapType="none"
-            showsUserLocation={false}
-            showsMyLocationButton={false}
-            toolbarEnabled={false}
-            pitchEnabled={false}
-            rotateEnabled={false}
+            compassEnabled={false}
+            logoEnabled={false}
+            attributionEnabled={false}
+            styleJSON={{
+              version: 8,
+              sources: {
+                osm: {
+                  type: 'raster',
+                  tiles: [tileUrl],
+                  tileSize: 256,
+                },
+              },
+              layers: [
+                { id: 'osmLayer', type: 'raster', source: 'osm' },
+              ],
+            }}
           >
-            <UrlTile
-              urlTemplate="https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png"
-              maximumZ={19}
-              flipY={false}
-              zIndex={0}
+            <MapLibreGL.Camera
+              centerCoordinate={[region.longitude, region.latitude]}
+              zoomLevel={15}
             />
+            {/* Raster source/layer are defined in styleJSON above */}
             {savedLocations.length >= 2 && (
-              <Polyline
-                coordinates={savedLocations.map((p) => ({ latitude: p.latitude, longitude: p.longitude }))}
-                strokeColor="#2563eb"
-                strokeWidth={4}
-              />
+              <MapLibreGL.ShapeSource
+                id="route"
+                shape={{
+                  type: 'Feature',
+                  geometry: {
+                    type: 'LineString',
+                    coordinates: savedLocations.map((p) => [p.longitude, p.latitude]),
+                  },
+                }}
+              >
+                <MapLibreGL.LineLayer id="routeLine" style={{ lineColor: '#2563eb', lineWidth: 4 }} />
+              </MapLibreGL.ShapeSource>
             )}
             {location && (
-              <Marker coordinate={location} title="You" />
+              <MapLibreGL.PointAnnotation id="you" coordinate={[location.longitude, location.latitude]} />
             )}
-          </MapView>
+          </MapLibreGL.MapView>
         ) : (
           <View style={styles.center}>
             {loading ? <ActivityIndicator size="large" /> : <Text>{errorMsg || 'Location unavailable'}</Text>}
