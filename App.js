@@ -6,6 +6,7 @@ import { MapView, Camera, ShapeSource, LineLayer, CircleLayer, RasterSource, Ras
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { useDatabase } from '@nozbe/watermelondb/hooks';
+import { Q } from '@nozbe/watermelondb';
 import { database } from './src/db/database';
 
 const BG_TASK = 'LOCATION_TRACKING_TASK';
@@ -130,21 +131,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const rows = await db.get('locations').query().fetch();
-        const pts = rows.map((r) => ({
-          latitude: r.latitude,
-          longitude: r.longitude,
-          timestamp: r.timestamp,
-          synced: r.synced,
-        }));
-        setSavedLocations(pts);
-        if (pts.length) lastSavedRef.current = pts[pts.length - 1];
-      } catch (e) {
-        console.log('Load DB error', e);
-      }
-    })();
+    const query = db.get('locations').query(Q.sortBy('timestamp', Q.asc));
+    const sub = query.observe().subscribe((rows) => {
+      const pts = rows.map((r) => ({
+        latitude: r.latitude,
+        longitude: r.longitude,
+        timestamp: r.timestamp,
+        synced: r.synced,
+      }));
+      setSavedLocations(pts);
+      if (pts.length) lastSavedRef.current = pts[pts.length - 1];
+    });
+    return () => sub?.unsubscribe();
   }, [db]);
 
   useEffect(() => {

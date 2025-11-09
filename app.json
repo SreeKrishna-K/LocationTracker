@@ -43,6 +43,11 @@
     },
     "plugins": [
       "@maplibre/maplibre-react-native"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "3840ff10-10e0-4686-b44b-2c97b827690f"
+      }
+    }
   }
 }
