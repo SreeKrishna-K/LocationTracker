@@ -2,7 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, FlatList } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import MapLibreGL from '@maplibre/maplibre-react-native';
+import { MapView, Camera, ShapeSource, LineLayer, CircleLayer, RasterSource, RasterLayer } from '@maplibre/maplibre-react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { useDatabase } from '@nozbe/watermelondb/hooks';
@@ -88,7 +88,11 @@ export default function App() {
   const [bgActive, setBgActive] = useState(false);
   const lastSavedRef = useRef(null);
   const watchRef = useRef(null);
-  const tileUrl = 'https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png';
+  const tileUrls = [
+    'https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
+    'https://b.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
+    'https://c.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
+  ];
 
   const distMeters = (a, b) => {
     const toRad = (x) => (x * Math.PI) / 180;
@@ -267,32 +271,22 @@ export default function App() {
     <SafeAreaView style={styles.container}>
       <View style={styles.container}>
         {region ? (
-          <MapLibreGL.MapView
+          <MapView
             style={StyleSheet.absoluteFillObject}
             compassEnabled={false}
             logoEnabled={false}
             attributionEnabled={false}
-            styleJSON={{
-              version: 8,
-              sources: {
-                osm: {
-                  type: 'raster',
-                  tiles: [tileUrl],
-                  tileSize: 256,
-                },
-              },
-              layers: [
-                { id: 'osmLayer', type: 'raster', source: 'osm' },
-              ],
-            }}
+            styleJSON={JSON.stringify({ version: 8, sources: {}, layers: [{ id: 'bg', type: 'background' }] })}
           >
-            <MapLibreGL.Camera
+            <Camera
               centerCoordinate={[region.longitude, region.latitude]}
               zoomLevel={15}
             />
-            {/* Raster source/layer are defined in styleJSON above */}
+            <RasterSource id="osm" tileUrlTemplates={tileUrls} tileSize={256}>
+              <RasterLayer id="osmLayer" sourceID="osm" />
+            </RasterSource>
             {savedLocations.length >= 2 && (
-              <MapLibreGL.ShapeSource
+              <ShapeSource
                 id="route"
                 shape={{
                   type: 'Feature',
@@ -302,20 +296,37 @@ export default function App() {
                   },
                 }}
               >
-                <MapLibreGL.LineLayer id="routeLine" style={{ lineColor: '#2563eb', lineWidth: 4 }} />
-              </MapLibreGL.ShapeSource>
+                <LineLayer id="routeLine" style={{ lineColor: '#2563eb', lineWidth: 4 }} />
+              </ShapeSource>
             )}
             {location && (
-              <MapLibreGL.PointAnnotation id="you" coordinate={[location.longitude, location.latitude]} />
+              <ShapeSource
+                id="me"
+                shape={{
+                  type: 'Feature',
+                  geometry: { type: 'Point', coordinates: [location.longitude, location.latitude] },
+                }}
+              >
+                <CircleLayer
+                  id="meDot"
+                  style={{
+                    circleColor: '#2563eb',
+                    circleRadius: 6,
+                    circleStrokeWidth: 2,
+                    circleStrokeColor: '#ffffff',
+                  }}
+                />
+              </ShapeSource>
             )}
-          </MapLibreGL.MapView>
+          </MapView>
+
         ) : (
           <View style={styles.center}>
             {loading ? <ActivityIndicator size="large" /> : <Text>{errorMsg || 'Location unavailable'}</Text>}
           </View>
         )}
         <View style={styles.attributionContainer} pointerEvents="none">
-          <Text style={styles.attributionText}>© OpenStreetMap contributors · Tiles © OSM France</Text>
+          <Text style={styles.attributionText}>© OpenStreetMap contributors · Tiles © OpenStreetMap</Text>
         </View>
         <View style={styles.leftBtnStack}>
           <TouchableOpacity onPress={() => setDebugVisible(true)} style={styles.debugBtn}>
