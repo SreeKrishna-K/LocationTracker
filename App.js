@@ -2,28 +2,17 @@ import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, FlatList } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { MapView, Camera, ShapeSource, LineLayer, CircleLayer, RasterSource, RasterLayer } from '@maplibre/maplibre-react-native';
+import TrackMap from './src/components/TrackMap';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { useDatabase } from '@nozbe/watermelondb/hooks';
 import { Q } from '@nozbe/watermelondb';
+import { OfflineManager } from '@maplibre/maplibre-react-native';
 import { database } from './src/db/database';
+import { distMeters } from './src/utils/geo';
 
 const BG_TASK = 'LOCATION_TRACKING_TASK';
 let bgLastSaved = null;
-const bgDistMeters = (a, b) => {
-  const toRad = (x) => (x * Math.PI) / 180;
-  const R = 6371000;
-  const dLat = toRad(b.latitude - a.latitude);
-  const dLon = toRad(b.longitude - a.longitude);
-  const lat1 = toRad(a.latitude);
-  const lat2 = toRad(b.latitude);
-  const sinDlat = Math.sin(dLat / 2);
-  const sinDlon = Math.sin(dLon / 2);
-  const h = sinDlat * sinDlat + Math.cos(lat1) * Math.cos(lat2) * sinDlon * sinDlon;
-  const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-  return R * c;
-};
 
 try {
   TaskManager.defineTask(BG_TASK, async ({ data, error }) => {
@@ -54,7 +43,7 @@ try {
       } catch (e) { console.log('BG DB save error', e); }
       console.log('BG saved (first)', point);
     } else {
-      const d = bgDistMeters(bgLastSaved, point);
+      const d = distMeters(bgLastSaved, point);
       if (d > 50) {
         bgLastSaved = point;
         try {
@@ -83,7 +72,6 @@ export default function App() {
   const [region, setRegion] = useState(null);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
-  const [tracking, setTracking] = useState(false);
   const [savedLocations, setSavedLocations] = useState([]);
   const [debugVisible, setDebugVisible] = useState(false);
   const [bgActive, setBgActive] = useState(false);
@@ -95,19 +83,6 @@ export default function App() {
     'https://c.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
   ];
 
-  const distMeters = (a, b) => {
-    const toRad = (x) => (x * Math.PI) / 180;
-    const R = 6371000;
-    const dLat = toRad(b.latitude - a.latitude);
-    const dLon = toRad(b.longitude - a.longitude);
-    const lat1 = toRad(a.latitude);
-    const lat2 = toRad(b.latitude);
-    const sinDlat = Math.sin(dLat / 2);
-    const sinDlon = Math.sin(dLon / 2);
-    const h = sinDlat * sinDlat + Math.cos(lat1) * Math.cos(lat2) * sinDlon * sinDlon;
-    const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-    return R * c;
-  };
 
   useEffect(() => {
     (async () => {
@@ -116,6 +91,11 @@ export default function App() {
         setErrorMsg('Permission to access location was denied');
         setLoading(false);
         return;
+      }
+      try {
+        await OfflineManager.setMaximumAmbientCacheSize(300 * 1024 * 1024);
+      } catch (e) {
+        console.log('Ambient cache size set error', e);
       }
       const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const coords = {
@@ -157,7 +137,6 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
     const start = async () => {
-      if (!tracking) return;
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         if (status !== 'granted') return;
@@ -230,11 +209,13 @@ export default function App() {
         watchRef.current = null;
       }
     };
-  }, [tracking]);
-
-  const onStartTracking = useCallback(() => {
-    setTracking((t) => !t);
   }, []);
+
+  const onRecenter = useCallback(() => {
+    if (location) {
+      setRegion((r) => ({ ...(r || {}), latitude: location.latitude, longitude: location.longitude }));
+    }
+  }, [location]);
 
   const onToggleBackground = useCallback(async () => {
     try {
@@ -265,59 +246,27 @@ export default function App() {
     }
   }, [bgActive]);
 
+  const onInvalidateTiles = useCallback(async () => {
+    try {
+      await OfflineManager.invalidateAmbientCache();
+    } catch (e) {
+      console.log('Invalidate cache error', e);
+    }
+  }, []);
+
+  const onClearTiles = useCallback(async () => {
+    try {
+      await OfflineManager.clearAmbientCache();
+    } catch (e) {
+      console.log('Clear cache error', e);
+    }
+  }, []);
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.container}>
         {region ? (
-          <MapView
-            style={StyleSheet.absoluteFillObject}
-            compassEnabled={false}
-            logoEnabled={false}
-            attributionEnabled={false}
-            styleJSON={JSON.stringify({ version: 8, sources: {}, layers: [{ id: 'bg', type: 'background' }] })}
-          >
-            <Camera
-              centerCoordinate={[region.longitude, region.latitude]}
-              zoomLevel={15}
-            />
-            <RasterSource id="osm" tileUrlTemplates={tileUrls} tileSize={256}>
-              <RasterLayer id="osmLayer" sourceID="osm" />
-            </RasterSource>
-            {savedLocations.length >= 2 && (
-              <ShapeSource
-                id="route"
-                shape={{
-                  type: 'Feature',
-                  geometry: {
-                    type: 'LineString',
-                    coordinates: savedLocations.map((p) => [p.longitude, p.latitude]),
-                  },
-                }}
-              >
-                <LineLayer id="routeLine" style={{ lineColor: '#2563eb', lineWidth: 4 }} />
-              </ShapeSource>
-            )}
-            {location && (
-              <ShapeSource
-                id="me"
-                shape={{
-                  type: 'Feature',
-                  geometry: { type: 'Point', coordinates: [location.longitude, location.latitude] },
-                }}
-              >
-                <CircleLayer
-                  id="meDot"
-                  style={{
-                    circleColor: '#2563eb',
-                    circleRadius: 6,
-                    circleStrokeWidth: 2,
-                    circleStrokeColor: '#ffffff',
-                  }}
-                />
-              </ShapeSource>
-            )}
-          </MapView>
-
+          <TrackMap region={region} tileUrls={tileUrls} savedLocations={savedLocations} location={location} />
         ) : (
           <View style={styles.center}>
             {loading ? <ActivityIndicator size="large" /> : <Text>{errorMsg || 'Location unavailable'}</Text>}
@@ -334,9 +283,9 @@ export default function App() {
             <Text style={styles.bgBtnText}>{bgActive ? 'BG: On' : 'BG: Off'}</Text>
           </TouchableOpacity>
         </View>
-        <View style={styles.fabContainer}>
-          <TouchableOpacity onPress={onStartTracking} style={styles.fab}>
-            <Text style={styles.fabText}>{tracking ? 'Stop Tracking' : 'Start Tracking'}</Text>
+        <View style={styles.rightBtnStack}>
+          <TouchableOpacity onPress={onRecenter} style={styles.recenterBtn}>
+            <Text style={styles.debugBtnText}>Recenter</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -351,6 +300,12 @@ export default function App() {
                 <Text style={styles.modalItem}>{index + 1}. {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)} · {new Date(item.timestamp).toISOString()}</Text>
               )}
             />
+            <TouchableOpacity onPress={onInvalidateTiles} style={styles.modalCloseBtn}>
+              <Text style={styles.modalCloseText}>Invalidate Tiles</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={onClearTiles} style={styles.modalCloseBtn}>
+              <Text style={styles.modalCloseText}>Clear Cache</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={() => setDebugVisible(false)} style={styles.modalCloseBtn}>
               <Text style={styles.modalCloseText}>Close</Text>
             </TouchableOpacity>
@@ -454,4 +409,33 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
   },
-});
+  leftBtnStack: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    gap: 8,
+  },
+  rightBtnStack: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+  },
+  bgBtn: {
+    marginTop: 8,
+    backgroundColor: '#f3f4f6',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  recenterBtn: {
+    backgroundColor: '#f3f4f6',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+})
+;
