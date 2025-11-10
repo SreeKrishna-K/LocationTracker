@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import TrackMap from './src/components/TrackMap';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import * as BackgroundFetch from 'expo-background-fetch';
 import { useDatabase } from '@nozbe/watermelondb/hooks';
 import { Q } from '@nozbe/watermelondb';
 import { OfflineManager } from '@maplibre/maplibre-react-native';
@@ -26,6 +27,9 @@ import {
   BG_ACCURACY,
   BG_TIME_INTERVAL_MS,
   BG_DISTANCE_INTERVAL_M,
+  BG_WATCHDOG_ENABLED,
+  BG_WATCHDOG_TASK,
+  BACKGROUND_FETCH_INTERVAL_SEC,
 } from './src/config/constants';
 
 let bgLastSaved = null;
@@ -82,6 +86,38 @@ try {
   // defineTask can throw if registered twice in fast refresh; ignore
 }
 
+try {
+  TaskManager.defineTask(BG_WATCHDOG_TASK, async ({ data, error }) => {
+    if (error) {
+      console.log('Watchdog task error', error);
+      return BackgroundFetch.Result.Failed;
+    }
+    try {
+      const started = await Location.hasStartedLocationUpdatesAsync(BG_TASK);
+      if (started) return BackgroundFetch.Result.NoData;
+      const perm = await Location.getBackgroundPermissionsAsync();
+      if (perm.status === 'granted') {
+        await Location.startLocationUpdatesAsync(BG_TASK, {
+          accuracy: Location.Accuracy[BG_ACCURACY],
+          timeInterval: BG_TIME_INTERVAL_MS,
+          distanceInterval: BG_DISTANCE_INTERVAL_M,
+          pausesUpdatesAutomatically: false,
+          showsBackgroundLocationIndicator: true,
+          foregroundService: {
+            notificationTitle: FG_SERVICE_TITLE,
+            notificationBody: FG_SERVICE_BODY,
+          },
+        });
+        return BackgroundFetch.Result.NewData;
+      }
+      return BackgroundFetch.Result.NoData;
+    } catch (e2) {
+      console.log('Watchdog task start error', e2);
+      return BackgroundFetch.Result.Failed;
+    }
+  });
+} catch {}
+
 export default function App() {
   const db = useDatabase();
   const [location, setLocation] = useState(null);
@@ -120,6 +156,30 @@ export default function App() {
       setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
       setRegion(coords);
       setLoading(false);
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!BG_WATCHDOG_ENABLED) return;
+        const status = await BackgroundFetch.getStatusAsync();
+        if (status !== BackgroundFetch.BackgroundFetchStatus.Available) {
+          console.log('BackgroundFetch unavailable', status);
+          return;
+        }
+        const registered = await TaskManager.isTaskRegisteredAsync(BG_WATCHDOG_TASK);
+        if (!registered) {
+          await BackgroundFetch.registerTaskAsync(BG_WATCHDOG_TASK, {
+            minimumInterval: BACKGROUND_FETCH_INTERVAL_SEC,
+            stopOnTerminate: false,
+            startOnBoot: true,
+            requiredNetworkType: BackgroundFetch.NetworkType.ANY,
+          });
+        }
+      } catch (e) {
+        console.log('Register watchdog error', e);
+      }
     })();
   }, []);
 

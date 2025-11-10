@@ -20,3 +20,6 @@ export const FG_SERVICE_TITLE = 'Location Tracking';
 export const FG_SERVICE_BODY = 'Tracking location in background';
 export const RENDER_WORLD_COPIES = false;
 export const AUTO_BG_ON_START = true;
+export const BG_WATCHDOG_ENABLED = true;
+export const BG_WATCHDOG_TASK = 'LOCATION_WATCHDOG_TASK';
+export const BACKGROUND_FETCH_INTERVAL_SEC = 15 * 60; // 15 minutes (Android minimum)
