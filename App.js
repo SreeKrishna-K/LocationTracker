@@ -124,6 +124,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    (async () => {
+      try {
+        if (!AUTO_BG_ON_START) return;
+        const started = await Location.hasStartedLocationUpdatesAsync(BG_TASK);
+        if (!started) {
+          const { status } = await Location.requestBackgroundPermissionsAsync();
+          if (status === 'granted') {
+            await Location.startLocationUpdatesAsync(BG_TASK, {
+              accuracy: Location.Accuracy[BG_ACCURACY],
+              timeInterval: BG_TIME_INTERVAL_MS,
+              distanceInterval: BG_DISTANCE_INTERVAL_M,
+              pausesUpdatesAutomatically: false,
+              showsBackgroundLocationIndicator: true,
+              foregroundService: {
+                notificationTitle: FG_SERVICE_TITLE,
+                notificationBody: FG_SERVICE_BODY,
+              },
+            });
+            setBgActive(true);
+          }
+        }
+      } catch (e) {
+        console.log('Auto BG start error', e);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
     const query = db.get('locations').query(Q.sortBy('timestamp', Q.asc));
     const sub = query.observe().subscribe((rows) => {
       const pts = rows.map((r) => ({

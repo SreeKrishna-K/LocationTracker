@@ -19,3 +19,4 @@ export const TRIP_MIN_POINTS = 2;
 export const FG_SERVICE_TITLE = 'Location Tracking';
 export const FG_SERVICE_BODY = 'Tracking location in background';
 export const RENDER_WORLD_COPIES = false;
+export const AUTO_BG_ON_START = true;

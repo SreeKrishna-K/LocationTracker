@@ -11,7 +11,6 @@ export default function TrackMap({ region, tileUrls, savedLocations, location })
       logoEnabled={false}
       attributionEnabled={false}
       renderWorldCopies={RENDER_WORLD_COPIES}
-      // maxBounds={{ne: [180, 85],sw: [-180, -85]}}
       styleJSON={JSON.stringify({ version: 8, sources: {}, layers: [{ id: 'bg', type: 'background' }] })}
     >
       <Camera centerCoordinate={[region.longitude, region.latitude]} zoomLevel={INITIAL_ZOOM} />
