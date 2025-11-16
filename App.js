@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, FlatList } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, FlatList, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import TrackMap from './src/components/TrackMap';
 import * as Location from 'expo-location';
@@ -27,6 +27,7 @@ import {
   BG_ACCURACY,
   BG_TIME_INTERVAL_MS,
   BG_DISTANCE_INTERVAL_M,
+  AUTO_BG_ON_START,
   BG_WATCHDOG_ENABLED,
   BG_WATCHDOG_TASK,
   BACKGROUND_FETCH_INTERVAL_SEC,
@@ -128,9 +129,17 @@ export default function App() {
   const [debugVisible, setDebugVisible] = useState(false);
   const [bgActive, setBgActive] = useState(false);
   const [tripsVisible, setTripsVisible] = useState(false);
+  const [filterVisible, setFilterVisible] = useState(false);
+  const [startInput, setStartInput] = useState('');
+  const [endInput, setEndInput] = useState('');
+  const [filterError, setFilterError] = useState(null);
+  const [filteredLocations, setFilteredLocations] = useState([]);
+  const [filterActive, setFilterActive] = useState(false);
   const lastSavedRef = useRef(null);
   const watchRef = useRef(null);
   const tileUrls = TILE_URLS;
+
+  const displayedLocations = useMemo(() => (filterActive ? filteredLocations : savedLocations), [filterActive, filteredLocations, savedLocations]);
 
 
   useEffect(() => {
@@ -377,11 +386,62 @@ export default function App() {
     }
   }, []);
 
+  const parseDateTime = (s) => {
+    if (!s || !s.trim()) return NaN;
+    const direct = new Date(s);
+    if (!isNaN(direct.getTime())) return direct.getTime();
+    const m = s.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?$/);
+    if (!m) return NaN;
+    const y = Number(m[1]);
+    const mo = Number(m[2]) - 1;
+    const d = Number(m[3]);
+    const hh = Number(m[4] || '0');
+    const mm = Number(m[5] || '0');
+    return new Date(y, mo, d, hh, mm).getTime();
+  };
+
+  const onApplyFilter = useCallback(async () => {
+    try {
+      setFilterError(null);
+      const s = parseDateTime(startInput);
+      const e = parseDateTime(endInput);
+      if (isNaN(s) || isNaN(e)) {
+        setFilterError('Invalid date/time');
+        return;
+      }
+      if (s >= e) {
+        setFilterError('Start must be before end');
+        return;
+      }
+      const rows = await db
+        .get('locations')
+        .query(Q.where('timestamp', Q.between(s, e)), Q.sortBy('timestamp', Q.asc))
+        .fetch();
+      const pts = rows.map((m) => ({ latitude: m.latitude, longitude: m.longitude, timestamp: m.timestamp }));
+      setFilteredLocations(pts);
+      setFilterActive(true);
+      setFilterVisible(false);
+      if (pts.length > 0) {
+        const first = pts[0];
+        setRegion((r) => ({ ...(r || {}), latitude: first.latitude, longitude: first.longitude }));
+      }
+    } catch (err) {
+      setFilterError('Query failed');
+    }
+  }, [db, startInput, endInput]);
+
+  const onClearFilter = useCallback(() => {
+    setFilterActive(false);
+    setFilteredLocations([]);
+    setFilterVisible(false);
+    setFilterError(null);
+  }, []);
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.container}>
         {region ? (
-          <TrackMap region={region} tileUrls={tileUrls} savedLocations={savedLocations} location={location} />
+          <TrackMap region={region} tileUrls={tileUrls} savedLocations={displayedLocations} location={location} />
         ) : (
           <View style={styles.center}>
             {loading ? <ActivityIndicator size="large" /> : <Text>{errorMsg || 'Location unavailable'}</Text>}
@@ -400,6 +460,14 @@ export default function App() {
           <TouchableOpacity onPress={() => setTripsVisible(true)} style={styles.bgBtn}>
             <Text style={styles.debugBtnText}>Trips</Text>
           </TouchableOpacity>
+          <TouchableOpacity onPress={() => setFilterVisible(true)} style={styles.bgBtn}>
+            <Text style={styles.debugBtnText}>Range</Text>
+          </TouchableOpacity>
+          {filterActive && (
+            <TouchableOpacity onPress={onClearFilter} style={styles.bgBtn}>
+              <Text style={styles.debugBtnText}>Clear Range</Text>
+            </TouchableOpacity>
+          )}
         </View>
         <View style={styles.rightBtnStack}>
           <TouchableOpacity onPress={onRecenter} style={styles.recenterBtn}>
@@ -445,6 +513,40 @@ export default function App() {
               )}
             />
             <TouchableOpacity onPress={() => setTripsVisible(false)} style={styles.modalCloseBtn}>
+              <Text style={styles.modalCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={filterVisible} transparent animationType="slide" onRequestClose={() => setFilterVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Show path by time</Text>
+            <Text style={styles.inputLabel}>Start (YYYY-MM-DD or YYYY-MM-DDTHH:mm)</Text>
+            <TextInput
+              value={startInput}
+              onChangeText={setStartInput}
+              placeholder="2025-11-16T09:30"
+              style={styles.input}
+              autoCapitalize="none"
+            />
+            <Text style={styles.inputLabel}>End (YYYY-MM-DD or YYYY-MM-DDTHH:mm)</Text>
+            <TextInput
+              value={endInput}
+              onChangeText={setEndInput}
+              placeholder="2025-11-16T11:00"
+              style={styles.input}
+              autoCapitalize="none"
+            />
+            {filterError ? <Text style={styles.errorText}>{filterError}</Text> : null}
+            <TouchableOpacity onPress={onApplyFilter} style={styles.modalCloseBtn}>
+              <Text style={styles.modalCloseText}>Show Path</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={onClearFilter} style={styles.modalCloseBtn}>
+              <Text style={styles.modalCloseText}>Clear</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setFilterVisible(false)} style={styles.modalCloseBtn}>
               <Text style={styles.modalCloseText}>Close</Text>
             </TouchableOpacity>
           </View>
@@ -546,6 +648,23 @@ const styles = StyleSheet.create({
   modalCloseText: {
     color: '#fff',
     fontWeight: '600',
+  },
+  inputLabel: {
+    fontSize: 12,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  errorText: {
+    color: '#b91c1c',
+    marginTop: 6,
+    fontSize: 12,
   },
   leftBtnStack: {
     position: 'absolute',
