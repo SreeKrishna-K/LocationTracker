@@ -36,7 +36,6 @@ const buildTrip = (arr) => {
     endTime: end.timestamp,
     durationMs: end.timestamp - start.timestamp,
     distanceMeters: distance,
-    count: arr.length,
-    points: arr,
+    points: arr,  // Include all points for visualization
   };
 };

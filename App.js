@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, FlatList, TextInput } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, FlatList, ScrollView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import TrackMap from './src/components/TrackMap';
 import * as Location from 'expo-location';
@@ -12,6 +12,13 @@ import { OfflineManager } from '@maplibre/maplibre-react-native';
 import { database } from './src/db/database';
 import { distMeters } from './src/utils/geo';
 import { segmentTrips } from './src/utils/trips';
+import DateTimePickerModal from 'react-native-modal-datetime-picker';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import TabNavigator from './src/components/TabNavigator';
+import TripCard from './src/components/TripCard';
+import Dashboard from './src/components/Dashboard';
+import Settings from './src/components/Settings';
 import {
   BG_TASK,
   FG_TIME_INTERVAL_MS,
@@ -126,15 +133,16 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
   const [savedLocations, setSavedLocations] = useState([]);
-  const [debugVisible, setDebugVisible] = useState(false);
   const [bgActive, setBgActive] = useState(false);
-  const [tripsVisible, setTripsVisible] = useState(false);
-  const [filterVisible, setFilterVisible] = useState(false);
-  const [startInput, setStartInput] = useState('');
-  const [endInput, setEndInput] = useState('');
-  const [filterError, setFilterError] = useState(null);
   const [filteredLocations, setFilteredLocations] = useState([]);
   const [filterActive, setFilterActive] = useState(false);
+  const [activeTab, setActiveTab] = useState('map');
+  const [selectedTrip, setSelectedTrip] = useState(null);
+  const [datePickerVisible, setDatePickerVisible] = useState(false);
+  const [datePickerMode, setDatePickerMode] = useState('start');
+  const [startDate, setStartDate] = useState(new Date());
+  const [endDate, setEndDate] = useState(new Date());
+  const [filterModalVisible, setFilterModalVisible] = useState(false);
   const lastSavedRef = useRef(null);
   const watchRef = useRef(null);
   const tileUrls = TILE_URLS;
@@ -386,31 +394,12 @@ export default function App() {
     }
   }, []);
 
-  const parseDateTime = (s) => {
-    if (!s || !s.trim()) return NaN;
-    const direct = new Date(s);
-    if (!isNaN(direct.getTime())) return direct.getTime();
-    const m = s.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?$/);
-    if (!m) return NaN;
-    const y = Number(m[1]);
-    const mo = Number(m[2]) - 1;
-    const d = Number(m[3]);
-    const hh = Number(m[4] || '0');
-    const mm = Number(m[5] || '0');
-    return new Date(y, mo, d, hh, mm).getTime();
-  };
-
   const onApplyFilter = useCallback(async () => {
     try {
-      setFilterError(null);
-      const s = parseDateTime(startInput);
-      const e = parseDateTime(endInput);
-      if (isNaN(s) || isNaN(e)) {
-        setFilterError('Invalid date/time');
-        return;
-      }
+      const s = startDate.getTime();
+      const e = endDate.getTime();
       if (s >= e) {
-        setFilterError('Start must be before end');
+        Alert.alert('Invalid Range', 'Start date must be before end date');
         return;
       }
       const rows = await db
@@ -420,279 +409,468 @@ export default function App() {
       const pts = rows.map((m) => ({ latitude: m.latitude, longitude: m.longitude, timestamp: m.timestamp }));
       setFilteredLocations(pts);
       setFilterActive(true);
-      setFilterVisible(false);
+      setFilterModalVisible(false);
       if (pts.length > 0) {
         const first = pts[0];
         setRegion((r) => ({ ...(r || {}), latitude: first.latitude, longitude: first.longitude }));
       }
+      Alert.alert('Filter Applied', `Showing ${pts.length} locations`);
     } catch (err) {
-      setFilterError('Query failed');
+      Alert.alert('Error', 'Failed to apply filter');
     }
-  }, [db, startInput, endInput]);
+  }, [db, startDate, endDate]);
 
   const onClearFilter = useCallback(() => {
     setFilterActive(false);
     setFilteredLocations([]);
-    setFilterVisible(false);
-    setFilterError(null);
+    setSelectedTrip(null);
   }, []);
+
+  const onTripPress = useCallback((trip) => {
+    setSelectedTrip(trip);
+    setActiveTab('map');
+    // Center map on trip start
+    if (trip.points && trip.points.length > 0) {
+      const midPoint = trip.points[Math.floor(trip.points.length / 2)];
+      setRegion((r) => ({ 
+        ...(r || {}), 
+        latitude: midPoint.latitude, 
+        longitude: midPoint.longitude,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      }));
+    }
+  }, []);
+
+  const handleDateConfirm = useCallback((date) => {
+    if (datePickerMode === 'start') {
+      setStartDate(date);
+    } else {
+      setEndDate(date);
+    }
+    setDatePickerVisible(false);
+  }, [datePickerMode]);
+
+  const tripLocations = useMemo(() => {
+    if (!selectedTrip || !selectedTrip.points) return [];
+    return selectedTrip.points;
+  }, [selectedTrip]);
+
+  const renderMapView = () => (
+    <View style={styles.mapContainer}>
+      {region ? (
+        <TrackMap 
+          region={region} 
+          tileUrls={tileUrls} 
+          savedLocations={selectedTrip ? tripLocations : displayedLocations} 
+          location={location} 
+        />
+      ) : (
+        <View style={styles.center}>
+          {loading ? <ActivityIndicator size="large" color="#6366f1" /> : <Text>{errorMsg || 'Location unavailable'}</Text>}
+        </View>
+      )}
+      
+      {/* Map Controls */}
+      <View style={styles.mapControlsContainer}>
+        {selectedTrip && (
+          <TouchableOpacity 
+            style={styles.clearTripBtn}
+            onPress={() => setSelectedTrip(null)}
+          >
+            <Ionicons name="close-circle" size={20} color="white" />
+            <Text style={styles.clearTripText}>Clear Trip</Text>
+          </TouchableOpacity>
+        )}
+        
+        <TouchableOpacity onPress={onRecenter} style={styles.mapBtn}>
+          <Ionicons name="locate" size={22} color="#6366f1" />
+        </TouchableOpacity>
+        
+        <TouchableOpacity onPress={() => setFilterModalVisible(true)} style={styles.mapBtn}>
+          <Ionicons name="calendar" size={22} color={filterActive ? '#10b981' : '#6366f1'} />
+        </TouchableOpacity>
+        
+        {filterActive && (
+          <TouchableOpacity onPress={onClearFilter} style={styles.mapBtn}>
+            <Ionicons name="close" size={22} color="#ef4444" />
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+
+  const renderTripsView = () => (
+    <View style={styles.tripsContainer}>
+      <View style={styles.tripsHeader}>
+        <Text style={styles.tripsTitle}>Your Trips</Text>
+        <Text style={styles.tripsSubtitle}>{trips.length} trips recorded</Text>
+      </View>
+      <FlatList
+        data={trips}
+        keyExtractor={(item, index) => `trip-${index}`}
+        renderItem={({ item, index }) => (
+          <TripCard 
+            trip={item} 
+            index={index} 
+            onPress={onTripPress}
+          />
+        )}
+        contentContainerStyle={{ paddingBottom: 20 }}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Ionicons name="car-outline" size={48} color="#d1d5db" />
+            <Text style={styles.emptyText}>No trips recorded yet</Text>
+            <Text style={styles.emptySubtext}>Start moving to record your first trip</Text>
+          </View>
+        }
+      />
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.container}>
-        {region ? (
-          <TrackMap region={region} tileUrls={tileUrls} savedLocations={displayedLocations} location={location} />
-        ) : (
-          <View style={styles.center}>
-            {loading ? <ActivityIndicator size="large" /> : <Text>{errorMsg || 'Location unavailable'}</Text>}
-          </View>
-        )}
-        <View style={styles.attributionContainer} pointerEvents="none">
-          {/* <Text style={styles.attributionText}>© OpenStreetMap contributors · Tiles © OpenStreetMap</Text> */}
-        </View>
-        <View style={styles.leftBtnStack}>
-          <TouchableOpacity onPress={() => setDebugVisible(true)} style={styles.debugBtn}>
-            <Text style={styles.debugBtnText}>Debug</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={onToggleBackground} style={styles.bgBtn}>
-            <Text style={styles.bgBtnText}>{bgActive ? 'BG: On' : 'BG: Off'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setTripsVisible(true)} style={styles.bgBtn}>
-            <Text style={styles.debugBtnText}>Trips</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setFilterVisible(true)} style={styles.bgBtn}>
-            <Text style={styles.debugBtnText}>Range</Text>
-          </TouchableOpacity>
-          {filterActive && (
-            <TouchableOpacity onPress={onClearFilter} style={styles.bgBtn}>
-              <Text style={styles.debugBtnText}>Clear Range</Text>
+        {/* Header */}
+        <LinearGradient
+          colors={['#6366f1', '#8b5cf6']}
+          style={styles.header}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+        >
+          <View style={styles.headerContent}>
+            <View>
+              <Text style={styles.headerTitle}>Location Tracker</Text>
+              <Text style={styles.headerSubtitle}>
+                {bgActive ? 'Background tracking active' : 'Foreground tracking only'}
+              </Text>
+            </View>
+            <TouchableOpacity 
+              style={styles.headerBtn}
+              onPress={onToggleBackground}
+            >
+              <Ionicons 
+                name={bgActive ? "radio-button-on" : "radio-button-off"} 
+                size={24} 
+                color="white" 
+              />
             </TouchableOpacity>
+          </View>
+        </LinearGradient>
+
+        {/* Content */}
+        <View style={styles.content}>
+          {activeTab === 'map' && renderMapView()}
+          {activeTab === 'trips' && renderTripsView()}
+          {activeTab === 'dashboard' && <Dashboard trips={trips} locations={savedLocations} />}
+          {activeTab === 'settings' && (
+            <Settings 
+              database={db}
+              bgActive={bgActive}
+              onToggleBackground={onToggleBackground}
+              onClearData={() => {
+                setSavedLocations([]);
+                setFilteredLocations([]);
+                setSelectedTrip(null);
+              }}
+            />
           )}
         </View>
-        <View style={styles.rightBtnStack}>
-          <TouchableOpacity onPress={onRecenter} style={styles.recenterBtn}>
-            <Text style={styles.debugBtnText}>Recenter</Text>
-          </TouchableOpacity>
-        </View>
+
+        {/* Tab Navigator */}
+        <TabNavigator 
+          activeTab={activeTab} 
+          onTabChange={setActiveTab}
+        />
       </View>
-      <Modal visible={debugVisible} transparent animationType="slide" onRequestClose={() => setDebugVisible(false)}>
+      {/* Date Range Filter Modal */}
+      <Modal visible={filterModalVisible} transparent animationType="slide" onRequestClose={() => setFilterModalVisible(false)}>
         <View style={styles.modalBackdrop}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Saved locations: {savedLocations.length}</Text>
-            <FlatList
-              data={savedLocations}
-              keyExtractor={(_, i) => String(i)}
-              renderItem={({ item, index }) => (
-                <Text style={styles.modalItem}>{index + 1}. {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)} · {new Date(item.timestamp).toISOString()}</Text>
-              )}
-            />
-            <TouchableOpacity onPress={onInvalidateTiles} style={styles.modalCloseBtn}>
-              <Text style={styles.modalCloseText}>Invalidate Tiles</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={onClearTiles} style={styles.modalCloseBtn}>
-              <Text style={styles.modalCloseText}>Clear Cache</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setDebugVisible(false)} style={styles.modalCloseBtn}>
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
+          <View style={styles.filterModal}>
+            <View style={styles.filterHeader}>
+              <Text style={styles.filterTitle}>Filter by Date Range</Text>
+              <TouchableOpacity onPress={() => setFilterModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#6b7280" />
+              </TouchableOpacity>
+            </View>
+            
+            <View style={styles.dateRangeContainer}>
+              <TouchableOpacity 
+                style={styles.datePickerBtn}
+                onPress={() => {
+                  setDatePickerMode('start');
+                  setDatePickerVisible(true);
+                }}
+              >
+                <Ionicons name="calendar-outline" size={20} color="#6366f1" />
+                <View style={styles.datePickerContent}>
+                  <Text style={styles.datePickerLabel}>Start Date</Text>
+                  <Text style={styles.datePickerValue}>
+                    {startDate.toLocaleDateString()} {startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              
+              <View style={styles.dateRangeDivider}>
+                <Ionicons name="arrow-forward" size={20} color="#9ca3af" />
+              </View>
+              
+              <TouchableOpacity 
+                style={styles.datePickerBtn}
+                onPress={() => {
+                  setDatePickerMode('end');
+                  setDatePickerVisible(true);
+                }}
+              >
+                <Ionicons name="calendar-outline" size={20} color="#6366f1" />
+                <View style={styles.datePickerContent}>
+                  <Text style={styles.datePickerLabel}>End Date</Text>
+                  <Text style={styles.datePickerValue}>
+                    {endDate.toLocaleDateString()} {endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+            
+            <View style={styles.filterActions}>
+              <TouchableOpacity 
+                style={[styles.filterBtn, styles.filterBtnSecondary]}
+                onPress={() => {
+                  setFilterModalVisible(false);
+                  onClearFilter();
+                }}
+              >
+                <Text style={styles.filterBtnSecondaryText}>Clear Filter</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.filterBtn, styles.filterBtnPrimary]}
+                onPress={onApplyFilter}
+              >
+                <Text style={styles.filterBtnPrimaryText}>Apply Filter</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
-
-      <Modal visible={tripsVisible} transparent animationType="slide" onRequestClose={() => setTripsVisible(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Trips: {trips.length}</Text>
-            <FlatList
-              data={trips}
-              keyExtractor={(_, i) => `trip-${i}`}
-              renderItem={({ item, index }) => (
-                <Text style={styles.modalItem}>
-                  {index + 1}. {fmtTime(item.startTime)} → {fmtTime(item.endTime)} · {fmtDuration(item.durationMs)} · {fmtKm(item.distanceMeters)}
-                </Text>
-              )}
-            />
-            <TouchableOpacity onPress={() => setTripsVisible(false)} style={styles.modalCloseBtn}>
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={filterVisible} transparent animationType="slide" onRequestClose={() => setFilterVisible(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Show path by time</Text>
-            <Text style={styles.inputLabel}>Start (YYYY-MM-DD or YYYY-MM-DDTHH:mm)</Text>
-            <TextInput
-              value={startInput}
-              onChangeText={setStartInput}
-              placeholder="2025-11-16T09:30"
-              style={styles.input}
-              autoCapitalize="none"
-            />
-            <Text style={styles.inputLabel}>End (YYYY-MM-DD or YYYY-MM-DDTHH:mm)</Text>
-            <TextInput
-              value={endInput}
-              onChangeText={setEndInput}
-              placeholder="2025-11-16T11:00"
-              style={styles.input}
-              autoCapitalize="none"
-            />
-            {filterError ? <Text style={styles.errorText}>{filterError}</Text> : null}
-            <TouchableOpacity onPress={onApplyFilter} style={styles.modalCloseBtn}>
-              <Text style={styles.modalCloseText}>Show Path</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={onClearFilter} style={styles.modalCloseBtn}>
-              <Text style={styles.modalCloseText}>Clear</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setFilterVisible(false)} style={styles.modalCloseBtn}>
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      
+      {/* Date Time Picker */}
+      <DateTimePickerModal
+        isVisible={datePickerVisible}
+        mode="datetime"
+        onConfirm={handleDateConfirm}
+        onCancel={() => setDatePickerVisible(false)}
+        date={datePickerMode === 'start' ? startDate : endDate}
+      />
       <StatusBar style="auto" />
     </SafeAreaView>
   );
+
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#f9fafb',
+  },
+  header: {
+    paddingTop: 12,
+    paddingBottom: 16,
+    paddingHorizontal: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  headerContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: 'white',
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.9)',
+    marginTop: 2,
+  },
+  headerBtn: {
+    padding: 8,
+  },
+  content: {
+    flex: 1,
   },
   center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  debugBtnContainer: {
+  mapContainer: {
+    flex: 1,
+    position: 'relative',
+  },
+  mapControlsContainer: {
     position: 'absolute',
-    bottom: 24,
-    left: 12,
+    bottom: 20,
+    right: 16,
+    gap: 12,
   },
-  debugBtn: {
-    backgroundColor: '#f3f4f6',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-  },
-  debugBtnText: {
-    color: '#111827',
-    fontWeight: '600',
-  },
-  fabContainer: {
-    position: 'absolute',
-    bottom: 24,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  fab: {
-    backgroundColor: '#111827',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+  mapBtn: {
+    width: 48,
+    height: 48,
     borderRadius: 24,
+    backgroundColor: 'white',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
     elevation: 3,
   },
-  fabText: {
-    color: '#fff',
+  clearTripBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ef4444',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    gap: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  clearTripText: {
+    color: 'white',
+    fontSize: 14,
     fontWeight: '600',
-    fontSize: 16,
   },
-  attributionContainer: {
-    position: 'absolute',
-    bottom: 12,
-    right: 12,
-    backgroundColor: 'rgba(255,255,255,0.85)',
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 4,
+  tripsContainer: {
+    flex: 1,
+    backgroundColor: '#f9fafb',
   },
-  attributionText: {
-    fontSize: 10,
+  tripsHeader: {
+    padding: 16,
+    paddingTop: 8,
+  },
+  tripsTitle: {
+    fontSize: 24,
+    fontWeight: '700',
     color: '#111827',
+  },
+  tripsSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginTop: 4,
+  },
+  emptyContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  emptyText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#9ca3af',
+    marginTop: 16,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#d1d5db',
+    marginTop: 4,
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  modalContent: {
-    maxHeight: '60%',
-    backgroundColor: '#fff',
-    padding: 16,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+  filterModal: {
+    width: '90%',
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    elevation: 10,
   },
-  modalTitle: {
-    fontSize: 16,
+  filterHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  filterTitle: {
+    fontSize: 20,
     fontWeight: '700',
-    marginBottom: 8,
+    color: '#111827',
   },
-  modalItem: {
+  dateRangeContainer: {
+    marginBottom: 24,
+  },
+  datePickerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f9fafb',
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    gap: 12,
+  },
+  datePickerContent: {
+    flex: 1,
+  },
+  datePickerLabel: {
     fontSize: 12,
-    marginBottom: 6,
+    color: '#6b7280',
+    marginBottom: 2,
   },
-  modalCloseBtn: {
-    marginTop: 8,
-    alignSelf: 'center',
-    backgroundColor: '#111827',
-    paddingHorizontal: 16,
+  datePickerValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  dateRangeDivider: {
+    alignItems: 'center',
     paddingVertical: 8,
-    borderRadius: 8,
   },
-  modalCloseText: {
-    color: '#fff',
+  filterActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  filterBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterBtnPrimary: {
+    backgroundColor: '#6366f1',
+  },
+  filterBtnSecondary: {
+    backgroundColor: '#f3f4f6',
+  },
+  filterBtnPrimaryText: {
+    color: 'white',
+    fontSize: 15,
     fontWeight: '600',
   },
-  inputLabel: {
-    fontSize: 12,
-    marginTop: 8,
-    marginBottom: 4,
+  filterBtnSecondaryText: {
+    color: '#6b7280',
+    fontSize: 15,
+    fontWeight: '600',
   },
-  input: {
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  errorText: {
-    color: '#b91c1c',
-    marginTop: 6,
-    fontSize: 12,
-  },
-  leftBtnStack: {
-    position: 'absolute',
-    top: 12,
-    left: 12,
-    gap: 8,
-  },
-  rightBtnStack: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-  },
-  bgBtn: {
-    marginTop: 8,
-    backgroundColor: '#f3f4f6',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-  },
-  recenterBtn: {
-    backgroundColor: '#f3f4f6',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-  },
-})
-;
+});
+
