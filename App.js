@@ -4,14 +4,18 @@ import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Modal, Fla
 import { SafeAreaView } from 'react-native-safe-area-context';
 import TrackMap from './src/components/TrackMap';
 import * as Location from 'expo-location';
-import * as TaskManager from 'expo-task-manager';
-import * as BackgroundFetch from 'expo-background-fetch';
 import { useDatabase } from '@nozbe/watermelondb/hooks';
 import { Q } from '@nozbe/watermelondb';
 import { OfflineManager } from '@maplibre/maplibre-react-native';
 import { database } from './src/db/database';
 import { distMeters } from './src/utils/geo';
 import { segmentTrips } from './src/utils/trips';
+import {
+  initializeBackgroundTasks,
+  startBackgroundLocationTracking,
+  stopBackgroundLocationTracking,
+  checkBackgroundLocationStatus,
+} from './src/utils/backgroundTaskManager';
 import DateTimePickerModal from 'react-native-modal-datetime-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,111 +24,17 @@ import TripCard from './src/components/TripCard';
 import Dashboard from './src/components/Dashboard';
 import Settings from './src/components/Settings';
 import {
-  BG_TASK,
   FG_TIME_INTERVAL_MS,
   FG_DISTANCE_INTERVAL_M,
   MIN_MOVE_TO_SAVE_M,
   TILE_URLS,
   CACHE_SIZE_BYTES,
-  FG_SERVICE_TITLE,
-  FG_SERVICE_BODY,
   ACCURACY,
   TRIP_GAP_MS,
   TRIP_MIN_POINTS,
-  BG_ACCURACY,
-  BG_TIME_INTERVAL_MS,
-  BG_DISTANCE_INTERVAL_M,
-  AUTO_BG_ON_START,
-  BG_WATCHDOG_ENABLED,
-  BG_WATCHDOG_TASK,
-  BACKGROUND_FETCH_INTERVAL_SEC,
 } from './src/config/constants';
 
-let bgLastSaved = null;
-
-try {
-  TaskManager.defineTask(BG_TASK, async ({ data, error }) => {
-    if (error) {
-      console.log('Background task error', error);
-      return;
-    }
-    const { locations } = data || {};
-    if (!locations || locations.length === 0) return;
-    const l = locations[0];
-    const point = {
-      latitude: l.coords.latitude,
-      longitude: l.coords.longitude,
-      timestamp: Date.now(),
-      synced: false,
-    };
-    if (!bgLastSaved) {
-      bgLastSaved = point;
-      try {
-        await database.write(async () => {
-          await database.get('locations').create((m) => {
-            m.latitude = point.latitude;
-            m.longitude = point.longitude;
-            m.timestamp = point.timestamp;
-            m.synced = false;
-          });
-        });
-      } catch (e) { console.log('BG DB save error', e); }
-      console.log('BG saved (first)', point);
-    } else {
-      const d = distMeters(bgLastSaved, point);
-      if (d > MIN_MOVE_TO_SAVE_M) {
-        bgLastSaved = point;
-        try {
-          await database.write(async () => {
-            await database.get('locations').create((m) => {
-              m.latitude = point.latitude;
-              m.longitude = point.longitude;
-              m.timestamp = point.timestamp;
-              m.synced = false;
-            });
-          });
-        } catch (e) { console.log('BG DB save error', e); }
-        console.log(`BG saved (>${MIN_MOVE_TO_SAVE_M}m: ${Math.round(d)}m)`);
-      } else {
-        console.log(`BG skipped (${Math.round(d)}m < ${MIN_MOVE_TO_SAVE_M}m)`);
-      }
-    }
-  });
-} catch (e) {
-  // defineTask can throw if registered twice in fast refresh; ignore
-}
-
-try {
-  TaskManager.defineTask(BG_WATCHDOG_TASK, async ({ data, error }) => {
-    if (error) {
-      console.log('Watchdog task error', error);
-      return BackgroundFetch.Result.Failed;
-    }
-    try {
-      const started = await Location.hasStartedLocationUpdatesAsync(BG_TASK);
-      if (started) return BackgroundFetch.Result.NoData;
-      const perm = await Location.getBackgroundPermissionsAsync();
-      if (perm.status === 'granted') {
-        await Location.startLocationUpdatesAsync(BG_TASK, {
-          accuracy: Location.Accuracy[BG_ACCURACY],
-          timeInterval: BG_TIME_INTERVAL_MS,
-          distanceInterval: BG_DISTANCE_INTERVAL_M,
-          pausesUpdatesAutomatically: false,
-          showsBackgroundLocationIndicator: true,
-          foregroundService: {
-            notificationTitle: FG_SERVICE_TITLE,
-            notificationBody: FG_SERVICE_BODY,
-          },
-        });
-        return BackgroundFetch.Result.NewData;
-      }
-      return BackgroundFetch.Result.NoData;
-    } catch (e2) {
-      console.log('Watchdog task start error', e2);
-      return BackgroundFetch.Result.Failed;
-    }
-  });
-} catch {}
+// Background tasks are now initialized in the backgroundTaskManager module
 
 export default function App() {
   const db = useDatabase();
@@ -179,54 +89,18 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        if (!BG_WATCHDOG_ENABLED) return;
-        const status = await BackgroundFetch.getStatusAsync();
-        if (status !== BackgroundFetch.BackgroundFetchStatus.Available) {
-          console.log('BackgroundFetch unavailable', status);
-          return;
-        }
-        const registered = await TaskManager.isTaskRegisteredAsync(BG_WATCHDOG_TASK);
-        if (!registered) {
-          await BackgroundFetch.registerTaskAsync(BG_WATCHDOG_TASK, {
-            minimumInterval: BACKGROUND_FETCH_INTERVAL_SEC,
-            stopOnTerminate: false,
-            startOnBoot: true,
-            requiredNetworkType: BackgroundFetch.NetworkType.ANY,
-          });
-        }
+        // Initialize all background tasks and watchdog
+        const status = await initializeBackgroundTasks();
+        setBgActive(status.isTracking);
+        
+        // Log current status
+        console.log('Background initialization complete:', status);
       } catch (e) {
-        console.log('Register watchdog error', e);
+        console.log('Background initialization error:', e);
       }
     })();
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        if (!AUTO_BG_ON_START) return;
-        const started = await Location.hasStartedLocationUpdatesAsync(BG_TASK);
-        if (!started) {
-          const { status } = await Location.requestBackgroundPermissionsAsync();
-          if (status === 'granted') {
-            await Location.startLocationUpdatesAsync(BG_TASK, {
-              accuracy: Location.Accuracy[BG_ACCURACY],
-              timeInterval: BG_TIME_INTERVAL_MS,
-              distanceInterval: BG_DISTANCE_INTERVAL_M,
-              pausesUpdatesAutomatically: false,
-              showsBackgroundLocationIndicator: true,
-              foregroundService: {
-                notificationTitle: FG_SERVICE_TITLE,
-                notificationBody: FG_SERVICE_BODY,
-              },
-            });
-            setBgActive(true);
-          }
-        }
-      } catch (e) {
-        console.log('Auto BG start error', e);
-      }
-    })();
-  }, []);
 
   useEffect(() => {
     const query = db.get('locations').query(Q.sortBy('timestamp', Q.asc));
@@ -258,12 +132,20 @@ export default function App() {
   const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
 
   useEffect(() => {
-    (async () => {
+    // Check background status periodically
+    const checkStatus = async () => {
       try {
-        const started = await Location.hasStartedLocationUpdatesAsync(BG_TASK);
-        setBgActive(Boolean(started));
-      } catch {}
-    })();
+        const status = await checkBackgroundLocationStatus();
+        setBgActive(status.isTracking);
+      } catch (e) {
+        console.log('Status check error:', e);
+      }
+    };
+    
+    checkStatus();
+    const interval = setInterval(checkStatus, 30000); // Check every 30 seconds
+    
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -352,29 +234,22 @@ export default function App() {
   const onToggleBackground = useCallback(async () => {
     try {
       if (!bgActive) {
-        const { status } = await Location.requestBackgroundPermissionsAsync();
-        if (status !== 'granted') {
-          console.log('Background permission not granted');
-          return;
+        const success = await startBackgroundLocationTracking();
+        if (success) {
+          setBgActive(true);
+          Alert.alert('Background Tracking', 'Location tracking is now active in the background. The app will continue tracking even when closed.');
+        } else {
+          Alert.alert('Permission Required', 'Please grant background location permission in settings to enable tracking when the app is closed.');
         }
-        await Location.startLocationUpdatesAsync(BG_TASK, {
-          accuracy: Location.Accuracy[BG_ACCURACY],
-          timeInterval: BG_TIME_INTERVAL_MS,
-          distanceInterval: BG_DISTANCE_INTERVAL_M,
-          pausesUpdatesAutomatically: false,
-          showsBackgroundLocationIndicator: true,
-          foregroundService: {
-            notificationTitle: FG_SERVICE_TITLE,
-            notificationBody: FG_SERVICE_BODY,
-          },
-        });
-        setBgActive(true);
       } else {
-        await Location.stopLocationUpdatesAsync(BG_TASK);
-        setBgActive(false);
+        const success = await stopBackgroundLocationTracking();
+        if (success) {
+          setBgActive(false);
+        }
       }
     } catch (e) {
       console.log('Background toggle error', e);
+      Alert.alert('Error', 'Failed to toggle background tracking');
     }
   }, [bgActive]);
 
@@ -464,7 +339,7 @@ export default function App() {
           tileUrls={tileUrls} 
           savedLocations={selectedTrip ? tripLocations : displayedLocations} 
           location={location} 
-        />
+        />  
       ) : (
         <View style={styles.center}>
           {loading ? <ActivityIndicator size="large" color="#6366f1" /> : <Text>{errorMsg || 'Location unavailable'}</Text>}
