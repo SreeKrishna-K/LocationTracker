@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet, Switch, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, Switch, TouchableOpacity, Alert, Platform, Modal, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { ADAPTIVE_TRACKING_ENABLED } from '../config/constants';
+import { createGPX, createCSV, createKML, formatBytes } from '../utils/exportFormats';
 
 const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
   const [permissions, setPermissions] = useState({
@@ -15,6 +18,8 @@ const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
     highAccuracy: false,
     showNotifications: true,
   });
+  const [exportModalVisible, setExportModalVisible] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     checkPermissions();
@@ -77,26 +82,136 @@ const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
     );
   };
 
-  const exportData = async () => {
+  const showExportOptions = () => {
+    setExportModalVisible(true);
+  };
+
+  const exportData = async (format = 'json') => {
+    setExporting(true);
+    setExportModalVisible(false);
     try {
+      // Fetch all locations
       const locations = await database.get('locations').query().fetch();
-      const data = locations.map(l => ({
-        lat: l.latitude,
-        lng: l.longitude,
-        timestamp: l.timestamp,
-        speed: l.speed,
-        accuracy: l.accuracy,
-        activityType: l.activityType,
+      
+      // Group locations by trips for better organization
+      const trips = [];
+      let currentTrip = [];
+      const TRIP_GAP = 10 * 60 * 1000; // 10 minutes
+      
+      for (let i = 0; i < locations.length; i++) {
+        const loc = locations[i];
+        
+        if (currentTrip.length > 0) {
+          const lastLoc = currentTrip[currentTrip.length - 1];
+          if (loc.timestamp - lastLoc.timestamp > TRIP_GAP) {
+            trips.push(currentTrip);
+            currentTrip = [];
+          }
+        }
+        
+        currentTrip.push({
+          lat: loc.latitude,
+          lng: loc.longitude,
+          timestamp: loc.timestamp,
+          datetime: new Date(loc.timestamp).toISOString(),
+          speed: loc.speed || 0,
+          accuracy: loc.accuracy || null,
+          altitude: loc.altitude || null,
+          heading: loc.heading || null,
+          activityType: loc.activityType || 'UNKNOWN',
+        });
+      }
+      
+      if (currentTrip.length > 0) {
+        trips.push(currentTrip);
+      }
+      
+      // Prepare location data
+      const allLocations = locations.map(loc => ({
+        lat: loc.latitude,
+        lng: loc.longitude,
+        timestamp: loc.timestamp,
+        speed: loc.speed || 0,
+        accuracy: loc.accuracy || null,
+        altitude: loc.altitude || null,
+        heading: loc.heading || null,
+        activityType: loc.activityType || 'UNKNOWN',
       }));
       
-      // In a real app, you'd save this to a file or share it
-      Alert.alert(
-        'Export Data',
-        `${data.length} locations ready for export. (Export functionality coming soon)`,
-        [{ text: 'OK' }]
-      );
+      let fileContent, fileName, mimeType;
+      
+      switch (format) {
+        case 'gpx':
+          fileContent = createGPX(allLocations, trips);
+          fileName = `location_export_${new Date().toISOString().split('T')[0]}.gpx`;
+          mimeType = 'application/gpx+xml';
+          break;
+          
+        case 'csv':
+          fileContent = createCSV(allLocations);
+          fileName = `location_export_${new Date().toISOString().split('T')[0]}.csv`;
+          mimeType = 'text/csv';
+          break;
+          
+        case 'kml':
+          fileContent = createKML(allLocations, trips);
+          fileName = `location_export_${new Date().toISOString().split('T')[0]}.kml`;
+          mimeType = 'application/vnd.google-earth.kml+xml';
+          break;
+          
+        default: // JSON
+          const exportData = {
+            exportDate: new Date().toISOString(),
+            totalLocations: locations.length,
+            totalTrips: trips.length,
+            trackingMode: ADAPTIVE_TRACKING_ENABLED ? 'adaptive' : 'fixed',
+            trips: trips.map((trip, index) => ({
+              tripNumber: index + 1,
+              startTime: trip[0]?.datetime,
+              endTime: trip[trip.length - 1]?.datetime,
+              points: trip.length,
+              locations: trip,
+            })),
+          };
+          fileContent = JSON.stringify(exportData, null, 2);
+          fileName = `location_export_${new Date().toISOString().split('T')[0]}.json`;
+          mimeType = 'application/json';
+      }
+      
+      // Create file
+      const fileUri = `${FileSystem.documentDirectory}${fileName}`;
+      await FileSystem.writeAsStringAsync(fileUri, fileContent, {
+        encoding: FileSystem.EncodingType.UTF8
+      });
+      
+      // Get file size for display
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+      const fileSize = formatBytes(fileInfo.size || 0);
+      
+      // Check if sharing is available
+      const canShare = await Sharing.isAvailableAsync();
+      
+      if (canShare) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: mimeType,
+          dialogTitle: 'Export Location Data',
+          UTI: format === 'csv' ? 'public.comma-separated-values-text' : 
+               format === 'gpx' ? 'public.xml' : 
+               format === 'kml' ? 'com.google.earth.kml' : 
+               'public.json',
+        });
+      } else {
+        Alert.alert(
+          'Export Complete',
+          `Format: ${format.toUpperCase()}\nFile: ${fileName}\nSize: ${fileSize}\n\n${locations.length} locations in ${trips.length} trips`,
+          [{ text: 'OK' }]
+        );
+      }
     } catch (e) {
-      Alert.alert('Error', 'Failed to export data.');
+      console.error('Export error:', e);
+      Alert.alert('Export Error', 'Failed to export data. Please try again.');
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -118,6 +233,7 @@ const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
   );
 
   return (
+    <>
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
         <Text style={styles.title}>Settings</Text>
@@ -210,10 +326,14 @@ const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
           <SettingRow
             icon="download-outline"
             title="Export Data"
-            subtitle="Download as JSON"
-            onPress={exportData}
+            subtitle="Multiple formats available"
+            onPress={showExportOptions}
             rightComponent={
-              <Ionicons name="chevron-forward" size={20} color="#6b7280" />
+              exporting ? (
+                <ActivityIndicator size="small" color="#6366f1" />
+              ) : (
+                <Ionicons name="chevron-forward" size={20} color="#6b7280" />
+              )
             }
           />
           <SettingRow
@@ -250,6 +370,83 @@ const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
         </View>
       </View>
     </ScrollView>
+    
+    {/* Export Format Selection Modal */}
+    <Modal
+      animationType="slide"
+      transparent={true}
+      visible={exportModalVisible}
+      onRequestClose={() => setExportModalVisible(false)}
+    >
+      <View style={styles.modalContainer}>
+        <View style={styles.modalContent}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Choose Export Format</Text>
+            <TouchableOpacity 
+              onPress={() => setExportModalVisible(false)}
+              style={styles.closeButton}
+            >
+              <Ionicons name="close" size={24} color="#6b7280" />
+            </TouchableOpacity>
+          </View>
+          
+          <View style={styles.formatOptions}>
+            <TouchableOpacity 
+              style={styles.formatOption}
+              onPress={() => exportData('json')}
+            >
+              <View style={styles.formatIcon}>
+                <Ionicons name="code-slash" size={24} color="#6366f1" />
+              </View>
+              <View style={styles.formatInfo}>
+                <Text style={styles.formatTitle}>JSON</Text>
+                <Text style={styles.formatDescription}>Complete data with all fields</Text>
+              </View>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.formatOption}
+              onPress={() => exportData('gpx')}
+            >
+              <View style={styles.formatIcon}>
+                <Ionicons name="map" size={24} color="#10b981" />
+              </View>
+              <View style={styles.formatInfo}>
+                <Text style={styles.formatTitle}>GPX</Text>
+                <Text style={styles.formatDescription}>GPS Exchange Format for mapping apps</Text>
+              </View>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.formatOption}
+              onPress={() => exportData('csv')}
+            >
+              <View style={styles.formatIcon}>
+                <Ionicons name="grid" size={24} color="#f59e0b" />
+              </View>
+              <View style={styles.formatInfo}>
+                <Text style={styles.formatTitle}>CSV</Text>
+                <Text style={styles.formatDescription}>Spreadsheet compatible format</Text>
+              </View>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.formatOption}
+              onPress={() => exportData('kml')}
+            >
+              <View style={styles.formatIcon}>
+                <Ionicons name="earth" size={24} color="#8b5cf6" />
+              </View>
+              <View style={styles.formatInfo}>
+                <Text style={styles.formatTitle}>KML</Text>
+                <Text style={styles.formatDescription}>Google Earth format with styling</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 };
 
@@ -346,6 +543,65 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 11,
     fontWeight: '600',
+  },
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  closeButton: {
+    padding: 8,
+  },
+  formatOptions: {
+    gap: 12,
+  },
+  formatOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f9fafb',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  formatIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: 'white',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+  },
+  formatInfo: {
+    flex: 1,
+  },
+  formatTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  formatDescription: {
+    fontSize: 13,
+    color: '#6b7280',
   },
 });
 
