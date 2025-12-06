@@ -3,6 +3,7 @@ import { View, Text, ScrollView, StyleSheet, Switch, TouchableOpacity, Alert } f
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { LinearGradient } from 'expo-linear-gradient';
+import { ADAPTIVE_TRACKING_ENABLED } from '../config/constants';
 
 const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
   const [permissions, setPermissions] = useState({
@@ -83,6 +84,9 @@ const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
         lat: l.latitude,
         lng: l.longitude,
         timestamp: l.timestamp,
+        speed: l.speed,
+        accuracy: l.accuracy,
+        activityType: l.activityType,
       }));
       
       // In a real app, you'd save this to a file or share it
@@ -164,6 +168,16 @@ const Settings = ({ database, bgActive, onToggleBackground, onClearData }) => {
                 trackColor={{ false: '#e5e7eb', true: '#c7d2fe' }}
                 thumbColor={bgActive ? '#6366f1' : '#9ca3af'}
               />
+            }
+          />
+          <SettingRow
+            icon="analytics-outline"
+            title="Adaptive Tracking"
+            subtitle={ADAPTIVE_TRACKING_ENABLED ? 'Smart mode: IDLE/WALKING/VEHICLE' : 'Fixed thresholds'}
+            rightComponent={
+              <View style={[styles.badge, { backgroundColor: ADAPTIVE_TRACKING_ENABLED ? '#10b981' : '#9ca3af' }]}>
+                <Text style={styles.badgeText}>{ADAPTIVE_TRACKING_ENABLED ? 'ON' : 'OFF'}</Text>
+              </View>
             }
           />
           <SettingRow

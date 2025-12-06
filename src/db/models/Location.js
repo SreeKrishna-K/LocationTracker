@@ -8,4 +8,9 @@ export default class LocationPoint extends Model {
   @field('longitude') longitude;
   @field('timestamp') timestamp;
   @field('synced') synced;
+  @field('speed') speed;
+  @field('accuracy') accuracy;
+  @field('altitude') altitude;
+  @field('heading') heading;
+  @field('activity_type') activityType;
 }

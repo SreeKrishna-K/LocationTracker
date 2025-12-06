@@ -36,6 +36,34 @@ const TripCard = ({ trip, index, onPress }) => {
     return hours > 0 ? (km / hours).toFixed(1) : '0';
   };
 
+  const getActivityIcon = () => {
+    // Analyze activity types in the trip
+    const activityCounts = {};
+    trip.points?.forEach(point => {
+      if (point.activityType) {
+        activityCounts[point.activityType] = (activityCounts[point.activityType] || 0) + 1;
+      }
+    });
+    
+    // Find dominant activity
+    const dominantActivity = Object.keys(activityCounts).reduce((a, b) => 
+      activityCounts[a] > activityCounts[b] ? a : b, 'UNKNOWN'
+    );
+    
+    switch(dominantActivity) {
+      case 'VEHICLE':
+        return { name: 'car', color: '#ef4444' };
+      case 'WALKING':
+        return { name: 'walk', color: '#10b981' };
+      case 'IDLE':
+        return { name: 'pause', color: '#6b7280' };
+      default:
+        return { name: 'help-circle', color: '#9ca3af' };
+    }
+  };
+
+  const activityIcon = getActivityIcon();
+
   return (
     <TouchableOpacity onPress={() => onPress(trip)} style={styles.container}>
       <LinearGradient
@@ -47,7 +75,10 @@ const TripCard = ({ trip, index, onPress }) => {
         <View style={styles.header}>
           <View style={styles.dateContainer}>
             <Text style={styles.date}>{formatDate(trip.startTime)}</Text>
-            <Text style={styles.tripNumber}>Trip #{index + 1}</Text>
+            <View style={styles.tripHeader}>
+              <Text style={styles.tripNumber}>Trip #{index + 1}</Text>
+              <Ionicons name={activityIcon.name} size={16} color={activityIcon.color} style={{ marginLeft: 8 }} />
+            </View>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#6b7280" />
         </View>
@@ -119,6 +150,11 @@ const styles = StyleSheet.create({
   tripNumber: {
     fontSize: 12,
     color: '#6b7280',
+    marginTop: 2,
+  },
+  tripHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginTop: 2,
   },
   timeRow: {

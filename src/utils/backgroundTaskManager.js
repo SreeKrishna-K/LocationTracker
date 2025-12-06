@@ -3,6 +3,7 @@ import * as TaskManager from 'expo-task-manager';
 import * as BackgroundFetch from 'expo-background-fetch';
 import { database } from '../db/database';
 import { distMeters } from './geo';
+import AdaptiveLocationManager from '../services/AdaptiveLocationManager';
 import {
   BG_TASK,
   BG_WATCHDOG_TASK,
@@ -13,9 +14,8 @@ import {
   FG_SERVICE_TITLE,
   FG_SERVICE_BODY,
   BACKGROUND_FETCH_INTERVAL_SEC,
+  ADAPTIVE_TRACKING_ENABLED,
 } from '../config/constants';
-
-let bgLastSaved = null;
 
 // Define the background location task
 export const defineBackgroundTask = () => {
@@ -33,26 +33,54 @@ export const defineBackgroundTask = () => {
       }
 
       const location = locations[0];
-      const point = {
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        timestamp: Date.now(),
-        synced: false,
-      };
-
-      // Save first location or if moved enough
-      if (!bgLastSaved) {
-        bgLastSaved = point;
-        await saveLocationToDatabase(point);
-        console.log('BG saved (first):', point);
+      
+      if (ADAPTIVE_TRACKING_ENABLED) {
+        // Use adaptive location manager
+        try {
+          const result = await AdaptiveLocationManager.processLocation(location);
+          console.log(`Adaptive tracking: state=${result.state}, speed=${result.speed.toFixed(1)}m/s, saved=${result.saved}`);
+          
+          // Check if buffer needs flushing
+          if (AdaptiveLocationManager.shouldFlushBuffer()) {
+            const pointsToSave = await AdaptiveLocationManager.flushBuffer();
+            if (pointsToSave.length > 0) {
+              await saveLocationBatch(pointsToSave);
+            }
+          }
+          
+          // Update task interval based on current state
+          const newInterval = AdaptiveLocationManager.getAdaptiveInterval();
+          await updateLocationTaskInterval(newInterval);
+        } catch (e) {
+          console.error('Adaptive tracking error:', e);
+        }
       } else {
-        const distance = distMeters(bgLastSaved, point);
-        if (distance > MIN_MOVE_TO_SAVE_M) {
-          bgLastSaved = point;
+        // Legacy fixed-threshold tracking
+        const point = {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          timestamp: Date.now(),
+          synced: false,
+          speed: location.coords.speed,
+          accuracy: location.coords.accuracy,
+          altitude: location.coords.altitude,
+          heading: location.coords.heading,
+          activity_type: 'UNKNOWN',
+        };
+
+        // Save first location or if moved enough
+        const bgLastSaved = await getLastSavedLocation();
+        if (!bgLastSaved) {
           await saveLocationToDatabase(point);
-          console.log(`BG saved (>${MIN_MOVE_TO_SAVE_M}m: ${Math.round(distance)}m)`);
+          console.log('BG saved (first):', point);
         } else {
-          console.log(`BG skipped (${Math.round(distance)}m < ${MIN_MOVE_TO_SAVE_M}m)`);
+          const distance = distMeters(bgLastSaved, point);
+          if (distance > MIN_MOVE_TO_SAVE_M) {
+            await saveLocationToDatabase(point);
+            console.log(`BG saved (>${MIN_MOVE_TO_SAVE_M}m: ${Math.round(distance)}m)`);
+          } else {
+            console.log(`BG skipped (${Math.round(distance)}m < ${MIN_MOVE_TO_SAVE_M}m)`);
+          }
         }
       }
     });
@@ -116,25 +144,41 @@ export const startBackgroundLocationTracking = async () => {
       return false;
     }
 
+    // Reset adaptive manager if enabled
+    if (ADAPTIVE_TRACKING_ENABLED) {
+      AdaptiveLocationManager.reset();
+    }
+
+    // Get initial configuration
+    const config = ADAPTIVE_TRACKING_ENABLED 
+      ? AdaptiveLocationManager.getCurrentConfig()
+      : { 
+          accuracy: BG_ACCURACY, 
+          timeInterval: BG_TIME_INTERVAL_MS, 
+          distanceInterval: BG_DISTANCE_INTERVAL_M 
+        };
+
     // Start location updates with Android foreground service
     await Location.startLocationUpdatesAsync(BG_TASK, {
-      accuracy: Location.Accuracy[BG_ACCURACY],
-      timeInterval: BG_TIME_INTERVAL_MS,
-      distanceInterval: BG_DISTANCE_INTERVAL_M,
+      accuracy: typeof config.accuracy === 'string' ? Location.Accuracy[config.accuracy] : config.accuracy,
+      timeInterval: config.timeInterval,
+      distanceInterval: config.distanceThreshold || config.distanceInterval || BG_DISTANCE_INTERVAL_M,
       pausesUpdatesAutomatically: false,
       showsBackgroundLocationIndicator: true,
       deferredUpdatesInterval: 0,
       deferredUpdatesDistance: 0,
-      activityType: Location.ActivityType.Other,
+      activityType: Location.ActivityType.AutomotiveNavigation,
       foregroundService: {
         notificationTitle: FG_SERVICE_TITLE,
-        notificationBody: FG_SERVICE_BODY,
+        notificationBody: ADAPTIVE_TRACKING_ENABLED 
+          ? 'Adaptive tracking active' 
+          : FG_SERVICE_BODY,
         notificationColor: '#6366f1',
         killServiceOnDestroy: false,
       },
     });
 
-    console.log('Background location tracking started');
+    console.log(`Background location tracking started (${ADAPTIVE_TRACKING_ENABLED ? 'adaptive' : 'fixed'} mode)`);
     return true;
   } catch (e) {
     console.error('Failed to start background location:', e);
@@ -219,12 +263,89 @@ const saveLocationToDatabase = async (point) => {
         record.latitude = point.latitude;
         record.longitude = point.longitude;
         record.timestamp = point.timestamp;
-        record.synced = false;
+        record.synced = point.synced || false;
+        record.speed = point.speed || 0;
+        record.accuracy = point.accuracy || null;
+        record.altitude = point.altitude || null;
+        record.heading = point.heading || null;
+        record.activityType = point.activity_type || null;
       });
     });
     return true;
   } catch (e) {
     console.error('Failed to save location to DB:', e);
+    return false;
+  }
+};
+
+// Save batch of locations
+const saveLocationBatch = async (points) => {
+  if (!points || points.length === 0) return;
+  
+  try {
+    await database.write(async () => {
+      const locationsCollection = database.get('locations');
+      const batch = [];
+      
+      for (const point of points) {
+        batch.push(
+          locationsCollection.prepareCreate((record) => {
+            record.latitude = point.latitude;
+            record.longitude = point.longitude;
+            record.timestamp = point.timestamp;
+            record.synced = point.synced || false;
+            record.speed = point.speed || 0;
+            record.accuracy = point.accuracy || null;
+            record.altitude = point.altitude || null;
+            record.heading = point.heading || null;
+            record.activityType = point.activity_type || null;
+          })
+        );
+      }
+      
+      await database.batch(...batch);
+    });
+    
+    console.log(`Saved batch of ${points.length} locations`);
+    return true;
+  } catch (e) {
+    console.error('Failed to save location batch:', e);
+    return false;
+  }
+};
+
+// Get last saved location from database
+const getLastSavedLocation = async () => {
+  try {
+    const locations = await database
+      .get('locations')
+      .query()
+      .fetch();
+    
+    if (locations.length === 0) return null;
+    
+    const last = locations[locations.length - 1];
+    return {
+      latitude: last.latitude,
+      longitude: last.longitude,
+      timestamp: last.timestamp,
+    };
+  } catch (e) {
+    console.error('Failed to get last location:', e);
+    return null;
+  }
+};
+
+// Update location task interval dynamically
+const updateLocationTaskInterval = async (newInterval) => {
+  try {
+    // Note: Expo doesn't support dynamic interval updates without restarting the task
+    // This is a placeholder for future implementation when supported
+    // For now, log the desired interval
+    console.log(`Adaptive interval would be: ${newInterval}ms`);
+    return true;
+  } catch (e) {
+    console.error('Failed to update interval:', e);
     return false;
   }
 };
@@ -247,7 +368,7 @@ export const initializeBackgroundTasks = async () => {
   }
   
   const status = await checkBackgroundLocationStatus();
-  console.log('Background task status:', status);
+  console.log(`Background task status (${ADAPTIVE_TRACKING_ENABLED ? 'adaptive' : 'fixed'} mode):`, status);
   
   return status;
 };

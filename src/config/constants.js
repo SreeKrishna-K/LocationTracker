@@ -1,3 +1,7 @@
+// Adaptive tracking configuration
+export const ADAPTIVE_TRACKING_ENABLED = true;
+
+// Legacy fixed tracking settings (used when ADAPTIVE_TRACKING_ENABLED = false)
 export const BG_TASK = 'LOCATION_TRACKING_TASK';
 export const ACCURACY = 'Balanced';
 export const FG_TIME_INTERVAL_MS = 5000;
@@ -23,3 +27,29 @@ export const AUTO_BG_ON_START = true;
 export const BG_WATCHDOG_ENABLED = true;
 export const BG_WATCHDOG_TASK = 'LOCATION_WATCHDOG_TASK';
 export const BACKGROUND_FETCH_INTERVAL_SEC = 15 * 60; // 15 minutes (Android minimum)
+
+// Adaptive sampling thresholds
+export const ADAPTIVE_THRESHOLDS = {
+  IDLE: {
+    speedRange: [0, 0.5], // 0-0.5 m/s (< 1.8 km/h)
+    timeInterval: 120000, // 120 seconds
+    distanceThreshold: 25, // 25 meters
+  },
+  WALKING: {
+    speedRange: [0.5, 3.0], // 0.5-3 m/s (1.8-10.8 km/h)
+    timeInterval: 20000, // 20 seconds
+    distanceThreshold: 15, // 15 meters
+  },
+  VEHICLE: {
+    speedRange: [3.0, Infinity], // >3 m/s (>10.8 km/h)
+    timeInterval: 5000, // 5 seconds
+    distanceThreshold: 10, // 10 meters
+  },
+  ACCURACY_GOOD: 30, // meters - good accuracy threshold
+  ACCURACY_MAX: 100, // meters - reject if worse than this
+  SPEED_SMOOTHING: 0.3, // exponential smoothing alpha
+  STATE_TRANSITION_SAMPLES: 3, // samples needed for state change
+  BUFFER_SIZE: 10, // points before batch write
+  BUFFER_TIMEOUT: 60000, // max time before flush (ms)
+  COMPRESSION_THRESHOLD: 5, // meters for collinear point removal
+};

@@ -110,6 +110,11 @@ export default function App() {
         longitude: r.longitude,
         timestamp: r.timestamp,
         synced: r.synced,
+        speed: r.speed,
+        accuracy: r.accuracy,
+        altitude: r.altitude,
+        heading: r.heading,
+        activityType: r.activityType,
       }));
       setSavedLocations(pts);
       if (pts.length) lastSavedRef.current = pts[pts.length - 1];
